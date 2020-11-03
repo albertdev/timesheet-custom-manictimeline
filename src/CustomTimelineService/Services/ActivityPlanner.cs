@@ -1,7 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
+using CsvHelper.Configuration;
 using CustomTimelineService.Models.Dto;
+using Microsoft.AspNetCore.Mvc.Razor.TagHelpers;
 using TimesheetProcessor.Core.Dto;
 
 namespace CustomTimelineService.Services
@@ -12,9 +15,19 @@ namespace CustomTimelineService.Services
     /// </summary>
     public class ActivityPlanner
     {
+        private static readonly TimeSpan MorningStart = TimeSpan.FromHours(7);
+        private static readonly TimeSpan MorningEnd = TimeSpan.FromHours(10);
+        // 3 AM next morning
+        private static readonly TimeSpan EveningStart = TimeSpan.FromHours(27);
+        // 7 AM next morning
+        private static readonly TimeSpan EveningEnd = TimeSpan.FromHours(31);
         private readonly DateTime _day;
         private readonly IDictionary<string, string> _tagIdToGroupId;
         private readonly List<ActivityDto> _activities = new List<ActivityDto>();
+        private readonly LinkedList<ActivityDto> _morningActivities = new LinkedList<ActivityDto>();
+        private readonly LinkedList<ActivityDto> _eveningActivities = new LinkedList<ActivityDto>();
+        private TimeSpan _morningTimeFree = MorningEnd - MorningStart;
+        private TimeSpan _eveningTimeFree = EveningEnd - EveningStart;
 
         public ActivityPlanner(DateTime day, IDictionary<string,string> tagIdToGroupId)
         {
@@ -22,7 +35,7 @@ namespace CustomTimelineService.Services
             _tagIdToGroupId = tagIdToGroupId;
         }
 
-        public IEnumerable<ActivityDto> ConvertedActivities => _activities;
+        public IEnumerable<ActivityDto> ConvertedActivities => _morningActivities.Concat(_eveningActivities).ToList();
 
         public void PlanTimeEntries(IEnumerable<TimeEntry> entries)
         {
@@ -31,30 +44,93 @@ namespace CustomTimelineService.Services
             timeEntries.Sort((x, y) => y.TimeSpent.CompareTo(x.TimeSpent));
 
             // Fit in 'activities' from 07:00 to 10:00. If that doesn't fit everything in, try from 03:00 to 07:00
-            var startHour = _day.Date.Add(new TimeSpan(7,0,0));
             foreach (var timeEntry in timeEntries)
             {
-                if (timeEntry.TimeSpent.Ticks < TimeSpan.TicksPerSecond)
+                var duration = timeEntry.TimeSpent;
+                // Ignore negative (?), zero or 1-second time entries
+                if (duration.Ticks <= TimeSpan.TicksPerSecond)
                 {
                     continue;
                 }
-                var endHour = startHour.Add(timeEntry.TimeSpent);
-                if (endHour.TimeOfDay > new TimeSpan(10, 0, 0))
-                {
-                    startHour = _day.Date.Add(new TimeSpan(27, 0, 0));
-                    endHour = startHour.Add(timeEntry.TimeSpent);
-                }
 
-                var activity = new ActivityDto
+                if (duration < _morningTimeFree)
                 {
-                    DisplayName = timeEntry.Tag.Notes,
-                    StartTime = startHour,
-                    EndTime = endHour,
-                    GroupId = _tagIdToGroupId[timeEntry.Tag.TagId]
-                };
-                _activities.Add(activity);
-                startHour = endHour;
+                    ScheduleInMorning(timeEntry, duration);
+                } else if (duration < _eveningTimeFree)
+                {
+                    ScheduleInEvening(timeEntry, duration);
+                }
+                else if (duration < (_morningTimeFree + _eveningTimeFree))
+                {
+                    // Split the activity into two bits
+                    var firstHalf = _morningTimeFree;
+                    ScheduleInMorning(timeEntry, firstHalf);
+                    ScheduleInEvening(timeEntry, duration - firstHalf);
+                }
+                else if (_eveningTimeFree.Ticks > 0)
+                {
+                    // Evening timeslot is going to be full. Split the time into two bits: one that fits, and one to be scheduled wherever
+                    var firstHalf = _eveningTimeFree;
+                    ScheduleInEvening(timeEntry, firstHalf);
+                    ScheduleInEvening(timeEntry, duration - firstHalf);
+                }
+                else
+                {
+                    // Both timeslots are now filled... Just keep adding stuff to the evening bit, it should move into time before 3 AM
+                    ScheduleInEvening(timeEntry, duration);
+                }
             }
+        }
+
+        private void ScheduleInMorning(TimeEntry timeEntry, TimeSpan duration)
+        {
+            // Use previous activity's end time, if any
+            var startHour = _morningActivities.Last?.Value?.EndTime ?? _day.Add(MorningStart);
+            var endHour = startHour.Add(duration);
+
+            var activity = new ActivityDto
+            {
+                DisplayName = timeEntry.Tag.Notes,
+                StartTime = startHour,
+                EndTime = endHour,
+                GroupId = _tagIdToGroupId[timeEntry.Tag.TagId]
+            };
+            _morningActivities.AddLast(activity);
+
+            _morningTimeFree -= duration;
+        }
+
+        private void ScheduleInEvening(TimeEntry timeEntry, TimeSpan duration)
+        {
+            // Use previous activity's end time, if any
+            var startHour = _eveningActivities.Last?.Value?.EndTime ?? _day.Add(EveningStart);
+            var endHour = startHour.Add(duration);
+
+            // Evening time slot is filled. Move stuff in front of it, but now logic works in reverse
+            if (_eveningTimeFree.Ticks <= 0)
+            {
+                Debug.Assert(_eveningActivities.First != null, "_eveningActivities.First != null"); // Only should get here if activities list is filled
+                endHour = _eveningActivities.First.Value.StartTime;
+                startHour = endHour.Subtract(duration);
+            }
+
+            var activity = new ActivityDto
+            {
+                DisplayName = timeEntry.Tag.Notes,
+                StartTime = startHour,
+                EndTime = endHour,
+                GroupId = _tagIdToGroupId[timeEntry.Tag.TagId]
+            };
+            // Keep linked list in chronological order by inserting in front
+            if (_eveningTimeFree.Ticks <= 0)
+            {
+                _eveningActivities.AddFirst(activity);
+            }
+            else
+            {
+                _eveningActivities.AddLast(activity);
+            }
+            _eveningTimeFree -= duration;
         }
     }
 }
