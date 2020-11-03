@@ -42,7 +42,7 @@ namespace CustomTimelineService.Services
             }
         }
 
-        public async Task LoadTimesheets(CancellationToken cancellationToken = new CancellationToken())
+        public void LoadTimesheets(CancellationToken cancellationToken = new CancellationToken())
         {
             lock (this)
             {
@@ -77,7 +77,8 @@ namespace CustomTimelineService.Services
 
         Task IHostedService.StartAsync(CancellationToken cancellationToken)
         {
-            return LoadTimesheets(cancellationToken);
+            LoadTimesheets(cancellationToken);
+            return Task.CompletedTask;
         }
 
         Task IHostedService.StopAsync(CancellationToken cancellationToken)

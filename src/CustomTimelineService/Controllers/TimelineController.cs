@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using CustomTimelineService.Models;
 using CustomTimelineService.Models.Dto;
+using CustomTimelineService.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using TimesheetProcessor.Core;
@@ -75,35 +76,9 @@ namespace CustomTimelineService.Controllers
                 {
                     break;
                 }
-                // Sort time entries from largest to smallest
-                var timeEntries = dayEntry.Entries.ToList();
-                timeEntries.Sort((x, y) => y.TimeSpent.CompareTo(x.TimeSpent));
-                
-                // Fit in 'activities' from 07:00 to 10:00. If that doesn't fit everything in, try from 03:00 to 07:00
-                var startHour = dayEntry.Day.Date.Add(new TimeSpan(7,0,0));
-                foreach (var timeEntry in timeEntries)
-                {
-                    if (timeEntry.TimeSpent.Ticks < TimeSpan.TicksPerSecond)
-                    {
-                        continue;
-                    }
-                    var endHour = startHour.Add(timeEntry.TimeSpent);
-                    if (endHour.TimeOfDay > new TimeSpan(10, 0, 0))
-                    {
-                        startHour = dayEntry.Day.Date.Add(new TimeSpan(27, 0, 0));
-                        endHour = startHour.Add(timeEntry.TimeSpent);
-                    }
-
-                    var activity = new ActivityDto
-                    {
-                        DisplayName = timeEntry.Tag.Notes,
-                        StartTime = startHour,
-                        EndTime = endHour,
-                        GroupId = tagIdToGroupId[timeEntry.Tag.TagId]
-                    };
-                    activities.Add(activity);
-                    startHour = endHour;
-                }
+                var planner = new ActivityPlanner(dayEntry.Day, tagIdToGroupId);
+                planner.PlanTimeEntries(dayEntry.Entries);
+                activities.AddRange(planner.ConvertedActivities);
             }
 
             timeline.Activities = activities.ToArray();
