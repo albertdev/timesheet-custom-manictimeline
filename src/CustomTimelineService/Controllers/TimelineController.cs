@@ -23,7 +23,7 @@ namespace CustomTimelineService.Controllers
             _timesheetSource = timesheetSource;
             _logger = logger;
         }
-        
+
         [HttpGet]
         public TimelineDto GetActivities(DateTimeOffset? fromTime, DateTimeOffset? toTime)
         {
@@ -35,6 +35,17 @@ namespace CustomTimelineService.Controllers
                 timeline.DisplayName = message;
                 return timeline;
             }
+
+            _logger.LogInformation("Retrieving From time [{0}] and To Time [{1}]", fromTime, toTime);
+
+            /* ManicTime normally records days from 12:00 AM to 11:59 PM, but if you never work that early and frequently cross midnight then it's useful
+             * to use the "Shift day start by (hours)" setting. However, this means that the timeline service now gets requests "from start day + shifted
+             * time, to end day + shifted time". This custom timeline service is day-based so this function simply drops the time component here.
+             */
+            fromTime = fromTime.Value.Date;
+            //  toTime is the day which is no longer included, so we do -1 to get the last included day
+            toTime = toTime.Value.Date.AddDays(-1);
+
             // check that both fromTime and toTime are in same week
             if (fromTime.Value.Date.GetIso8601WeekOfYear() != toTime.Value.Date.GetIso8601WeekOfYear())
             {
@@ -54,10 +65,9 @@ namespace CustomTimelineService.Controllers
                 return timeline;
             }
 
-            _logger.LogInformation("Retrieving From time [{0}] and To Time [{1}]", fromTime, toTime);
             timeline.Color = HelperFunctions.GetRandomColor();
             ConvertTimesheetToActivities(timesheet, timeline, fromTime.Value.Date, toTime.Value.Date);
-            
+
             return timeline;
         }
 
@@ -76,7 +86,9 @@ namespace CustomTimelineService.Controllers
                 {
                     break;
                 }
-                var planner = new ActivityPlanner(dayEntry.Day, tagIdToGroupId);
+
+                var planning = _timesheetSource.CheckPlanning(dayEntry.Day);
+                var planner = new ActivityPlanner(dayEntry.Day, planning, tagIdToGroupId);
                 planner.PlanTimeEntries(dayEntry.Entries);
                 activities.AddRange(planner.ConvertedActivities);
             }

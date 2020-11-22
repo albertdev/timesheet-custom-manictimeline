@@ -1,10 +1,14 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using CsvHelper;
+using CsvHelper.Configuration;
 using CustomTimelineService.Models;
+using CustomTimelineService.Models.Dto;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using TimesheetProcessor.Core.Dto;
@@ -17,12 +21,14 @@ namespace CustomTimelineService.Services
         private readonly string _loadPath;
         private readonly ILogger<TimesheetLoader> _logger;
         private readonly SortedDictionary<DateTime, Timesheet> _timesheets;
+        private readonly SortedDictionary<DateTime, DayPlanning> _dayPlannings;
 
         public TimesheetLoader(string loadPath, ILogger<TimesheetLoader> logger)
         {
             _loadPath = loadPath;
             _logger = logger;
             _timesheets = new SortedDictionary<DateTime, Timesheet>();
+            _dayPlannings = new SortedDictionary<DateTime, DayPlanning>();
         }
 
         public Timesheet FindSheet(DateTime day)
@@ -42,6 +48,16 @@ namespace CustomTimelineService.Services
             }
         }
 
+        public DayPlanning CheckPlanning(DateTime day)
+        {
+            if (! _dayPlannings.ContainsKey(day))
+            {
+                return DayPlanning.Default;
+            }
+
+            return _dayPlannings[day.Date];
+        }
+
         public void LoadTimesheets(CancellationToken cancellationToken = new CancellationToken())
         {
             lock (this)
@@ -52,25 +68,81 @@ namespace CustomTimelineService.Services
                     throw new Exception("No input timesheet files found");
                 }
 
-                var reader = new ManicTimeParser(true);
+                var timesheetReader = new ManicTimeParser(true);
 
                 foreach (var file in files)
                 {
                     try
                     {
-                        using (var streamReader = new StreamReader(file))
+                        if (file.EndsWith("_planning.tsv"))
                         {
-                            var timesheet = reader.ParseTimesheet(streamReader);
-                            foreach (var day in timesheet.Days)
-                            {
-                                _timesheets[day.Day] = timesheet;
-                            }
+                            ParseDailyPlanning(file);
+                        }
+                        else
+                        {
+                            ParseDiffTimesheet(file, timesheetReader);
                         }
                     }
                     catch (Exception e)
                     {
                         _logger.LogError(e, $"File {file} could not be parsed");
                     }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Read '2020-wXX_planning.tsv' file.
+        /// This TSV file has no header row, instead it contains 3 columns: day, end of morning quiet hours and start of evening quiet hours.
+        /// </summary>
+        /// <param name="file"></param>
+        private void ParseDailyPlanning(string file)
+        {
+            CsvConfiguration csvConfiguration = new CsvConfiguration(CultureInfo.InvariantCulture)
+            {
+                Delimiter = "\t",
+                HasHeaderRecord = false
+            };
+            using (var streamReader = new StreamReader(file))
+            using (CsvReader csv = new CsvReader(streamReader, csvConfiguration))
+            {
+                while (csv.Read())
+                {
+                    try
+                    {
+                        var day = DateTime.Parse(csv[0]);
+                        var endOfMorning = TimeSpan.Parse(csv[1]);
+                        var startOfEvening = TimeSpan.Parse(csv[2]);
+
+                        // Quiet hours might start next day in the morning.
+                        // When we get 00:00:00 or 03:00:00, add 24 hours to make sure that the timespan goes into the next day
+                        if (startOfEvening.Hours < endOfMorning.Hours)
+                        {
+                            startOfEvening = startOfEvening.Add(TimeSpan.FromHours(24));
+                        }
+
+                        _dayPlannings[day] = new DayPlanning
+                        {
+                            EndOfMorningQuietHours = endOfMorning,
+                            StartOfEveningQuietHours = startOfEvening
+                        };
+                    }
+                    catch (Exception e)
+                    {
+                        throw new Exception($"Problem parsing row {csv.Context.Row}", e);
+                    }
+                }
+            }
+        }
+
+        private void ParseDiffTimesheet(string file, ManicTimeParser reader)
+        {
+            using (var streamReader = new StreamReader(file))
+            {
+                var timesheet = reader.ParseTimesheet(streamReader);
+                foreach (var day in timesheet.Days)
+                {
+                    _timesheets[day.Day] = timesheet;
                 }
             }
         }

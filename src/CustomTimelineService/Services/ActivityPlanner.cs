@@ -2,9 +2,7 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
-using CsvHelper.Configuration;
 using CustomTimelineService.Models.Dto;
-using Microsoft.AspNetCore.Mvc.Razor.TagHelpers;
 using TimesheetProcessor.Core.Dto;
 
 namespace CustomTimelineService.Services
@@ -15,24 +13,28 @@ namespace CustomTimelineService.Services
     /// </summary>
     public class ActivityPlanner
     {
-        private static readonly TimeSpan MorningStart = TimeSpan.FromHours(7);
-        private static readonly TimeSpan MorningEnd = TimeSpan.FromHours(10);
-        // 3 AM next morning
-        private static readonly TimeSpan EveningStart = TimeSpan.FromHours(27);
-        // 7 AM next morning
-        private static readonly TimeSpan EveningEnd = TimeSpan.FromHours(31);
+        private readonly TimeSpan _morningStart;
+        private readonly TimeSpan _eveningStart;
         private readonly DateTime _day;
         private readonly IDictionary<string, string> _tagIdToGroupId;
         private readonly List<ActivityDto> _activities = new List<ActivityDto>();
         private readonly LinkedList<ActivityDto> _morningActivities = new LinkedList<ActivityDto>();
         private readonly LinkedList<ActivityDto> _eveningActivities = new LinkedList<ActivityDto>();
-        private TimeSpan _morningTimeFree = MorningEnd - MorningStart;
-        private TimeSpan _eveningTimeFree = EveningEnd - EveningStart;
+        private TimeSpan _morningTimeFree;
+        private TimeSpan _eveningTimeFree;
 
-        public ActivityPlanner(DateTime day, IDictionary<string,string> tagIdToGroupId)
+        public ActivityPlanner(DateTime day, DayPlanning planning, IDictionary<string,string> tagIdToGroupId)
         {
             _day = day;
             _tagIdToGroupId = tagIdToGroupId;
+
+            _morningStart = planning.StartOfMorningQuietHours;
+            var morningEnd = planning.EndOfMorningQuietHours;
+            _eveningStart = planning.StartOfEveningQuietHours;
+            var eveningEnd = planning.EndOfEveningQuietHours;
+
+            _eveningTimeFree = eveningEnd - _eveningStart;
+            _morningTimeFree = morningEnd - _morningStart;
         }
 
         public IEnumerable<ActivityDto> ConvertedActivities => _morningActivities.Concat(_eveningActivities).ToList();
@@ -85,7 +87,7 @@ namespace CustomTimelineService.Services
         private void ScheduleInMorning(TimeEntry timeEntry, TimeSpan duration)
         {
             // Use previous activity's end time, if any
-            var startHour = _morningActivities.Last?.Value?.EndTime ?? _day.Add(MorningStart);
+            var startHour = _morningActivities.Last?.Value?.EndTime ?? _day.Add(_morningStart);
             var endHour = startHour.Add(duration);
 
             var activity = new ActivityDto
@@ -103,7 +105,7 @@ namespace CustomTimelineService.Services
         private void ScheduleInEvening(TimeEntry timeEntry, TimeSpan duration)
         {
             // Use previous activity's end time, if any
-            var startHour = _eveningActivities.Last?.Value?.EndTime ?? _day.Add(EveningStart);
+            var startHour = _eveningActivities.Last?.Value?.EndTime ?? _day.Add(_eveningStart);
             var endHour = startHour.Add(duration);
 
             // Evening time slot is filled. Move stuff in front of it, but now logic works in reverse
