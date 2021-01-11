@@ -148,6 +148,11 @@ namespace CustomTimelineService.Services
                 var timesheet = reader.ParseTimesheet(streamReader);
                 foreach (var day in timesheet.Days)
                 {
+                    if (_timesheets.ContainsKey(day.Day))
+                    {
+                        _logger.LogError($"Timesheet file {file} contains days which were already loaded from a different file");
+                        return;
+                    }
                     _timesheets[day.Day] = timesheet;
                 }
             }
